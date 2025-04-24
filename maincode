@@ -1,0 +1,115 @@
+install.packages("caret")
+install.packages("gbm")
+# Load the libraries
+library(readr)
+library(caret)
+library(gbm)
+
+# Read the CSV file
+data <- read_csv("realdata.csv", show_col_types = FALSE)
+# Defining  feature set
+features <- data[, c("Full Baths", "HBA", "Beds", "Apx SQFT", "Apx ACR", "TotalBaths")]
+target <- data$`Sale Price`
+
+# Scale features
+ScaledFeatures <- scale(features)
+
+# Train/test split
+set.seed(123)
+index <- createDataPartition(target, p = 0.8, list = FALSE)
+trainX <- ScaledFeatures[index, ]
+testX  <- ScaledFeatures[-index, ]
+trainY <- target[index]
+testY  <- target[-index]
+#GBM Model
+gbm_grid <- expand.grid(
+  n.trees = c(300, 500),
+  interaction.depth = c(3, 5),
+  shrinkage = c(0.05, 0.1),
+  n.minobsinnode = 10
+)
+
+set.seed(123)
+gbm_model <- train(
+  x = trainX,
+  y = trainY,
+  method = "gbm",
+  trControl = trainControl(method = "cv", number = 5),
+  tuneGrid = gbm_grid,
+  verbose = FALSE
+)
+
+gbm_pred <- predict(gbm_model, newdata = testX)
+
+gbm_mae <- mean(abs(testY - gbm_pred))
+gbm_rmse <- sqrt(mean((testY - gbm_pred)^2))
+
+cat("GBM GridSearch MAE:", round(gbm_mae, 2), "\n")
+cat("GBM GridSearch RMSE:", round(gbm_rmse, 2), "\n")
+#XGB Model
+xgb_grid <- expand.grid(
+  nrounds = c(100, 300),
+  max_depth = c(3, 5),
+  eta = c(0.05, 0.1),
+  gamma = 0,
+  colsample_bytree = 1,
+  min_child_weight = 1,
+  subsample = 1
+)
+
+set.seed(123)
+xgb_model <- train(
+  x = trainX,
+  y = trainY,
+  method = "xgbTree",
+  trControl = trainControl(method = "cv", number = 5),
+  tuneGrid = xgb_grid,
+  verbose = FALSE
+)
+
+xgb_pred <- predict(xgb_model, newdata = testX)
+
+xgb_mae <- mean(abs(testY - xgb_pred))
+xgb_rmse <- sqrt(mean((testY - xgb_pred)^2))
+
+cat("XGBoost GridSearch MAE:", round(xgb_mae, 2), "\n")
+cat("XGBoost GridSearch RMSE:", round(xgb_rmse, 2), "\n")
+# Final Blend: 85% XGB + 15% GBM
+# ----------------------------------------
+final_pred <- 0.85 * xgb_pred + 0.15 * gbm_pred
+
+blend_mae <- mean(abs(testY - final_pred))
+blend_rmse <- sqrt(mean((testY - final_pred)^2))
+
+cat("Optimized Blend MAE:", round(blend_mae, 2), "\n")
+cat("Optimized Blend RMSE:", round(blend_rmse, 2), "\n")
+# 1. New house input (no price-based features)
+new_house <- data.frame(
+  `Full Baths`   = 2,
+  HBA            = 0,
+  Beds           = 3,
+  `Apx SQFT`     = 1730,
+  `Apx ACR`      = .36,
+  TotalBaths     = 2  # Computed: Full Baths + 0.5 * HBA
+)
+
+
+# 2. Ensure feature names match training
+colnames(new_house) <- colnames(ScaledFeatures)
+
+# 3. Apply the same scaling as your training set
+scaled_new <- scale(new_house,
+                    center = attr(ScaledFeatures, "scaled:center"),
+                    scale  = attr(ScaledFeatures, "scaled:scale"))
+
+# 4. Predict using your trained XGB + GBM blend (price-blind model)
+# Ensure the xgboost library is loaded
+library(xgboost)
+
+xgb_pred <- predict(xgb_model$finalModel, newdata = xgb.DMatrix(as.matrix(scaled_new)))
+gbm_pred <- predict(gbm_model, newdata = as.data.frame(scaled_new))
+
+final_pred <- 0.85 * xgb_pred + 0.15 * gbm_pred
+
+# 5. Output the result
+cat("🏡 Predicted Price:", round(final_pred, 2), "\n")
